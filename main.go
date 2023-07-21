@@ -21,6 +21,7 @@ import (
 
 var helpStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render
 
+var openaiClient *openai.Client
 var percent float64
 var content string
 
@@ -28,6 +29,24 @@ type model struct {
 	viewport viewport.Model
 	progress progress.Model
 	loading  bool
+}
+
+func main() {
+	model, err := newModel()
+	if err != nil {
+		fmt.Println("Could not initialize Bubble Tea model:", err)
+		os.Exit(1)
+	}
+
+	openaiClient = openai.NewClient(os.Getenv("OPENAI_TOKEN"))
+
+	var mu sync.Mutex
+	go setContent(&mu, &percent)
+
+	if _, err := tea.NewProgram(model).Run(); err != nil {
+		fmt.Println("Bummer, there's been an error:", err)
+		os.Exit(1)
+	}
 }
 
 func newModel() (*model, error) {
@@ -68,29 +87,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			percent = 1.0
 			m.loading = false
 
-			const width = 120
-
-			vp := viewport.New(width, 40)
-			vp.Style = lipgloss.NewStyle().
-				BorderStyle(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("62")).
-				PaddingRight(2)
-
-			renderer, err := glamour.NewTermRenderer(
-				glamour.WithAutoStyle(),
-				glamour.WithWordWrap(width),
-			)
+			vp, err := NewViewport(content)
 			if err != nil {
 				panic(err)
 			}
-
-			str, err := renderer.Render(content)
-			if err != nil {
-				panic(err)
-			}
-
-			vp.SetContent(str)
-
 			m.viewport = vp
 
 			return m, nil
@@ -98,9 +98,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickCmd()
 	default:
 		return m, tea.ClearScreen
-
 	}
-
 }
 
 const (
@@ -131,111 +129,10 @@ func tickCmd() tea.Cmd {
 	})
 }
 
-func main() {
-
-	model, err := newModel()
-	if err != nil {
-		fmt.Println("Could not initialize Bubble Tea model:", err)
-		os.Exit(1)
-	}
-
-	var mu sync.Mutex
-
-	go func() {
-		metadata, err := spotifyclient.GetCurrentTrack()
-		if err != nil {
-			fmt.Println("Seems that you don't have the spotify app desktop installed  or is not open :(")
-			log.Fatalf("failed getting metadata, err: %s", err.Error())
-		}
-
-		fmt.Println(metadata)
-
-		artistName := metadata.ArtistName[0]
-		trackName := metadata.TrackName
-
-		albumName := strings.ReplaceAll(strings.ToLower(metadata.AlbumName), "deluxe", "")
-		albumName = strings.ReplaceAll(albumName, "expanded edition - remastered", "")
-		albumName = strings.ReplaceAll(strings.ToLower(albumName), strings.ToLower("Bonus Tracks Edition"), "")
-
-		type search struct {
-			prompt string
-			title  string
-		}
-
-		searches := []search{
-			{
-				prompt: fmt.Sprintf("Give me album information (limit 500 characters) of %s %s", artistName, albumName),
-				title:  "## Album Info",
-			},
-			{
-				prompt: fmt.Sprintf("Give me album tracklist of %s %s", artistName, albumName),
-				title:  "## Album Tracklist",
-			},
-			{
-				prompt: fmt.Sprintf("Give me album credits of %s %s", artistName, albumName),
-				title:  "## Album Credits",
-			},
-			{
-				prompt: fmt.Sprintf("Give me song info (limit 500 characters) of %s %s", artistName, trackName),
-				title:  "## Song Info",
-			},
-		}
-
-		ch := make(chan string, len(searches))
-		var wg sync.WaitGroup
-
-		for _, search := range searches {
-			wg.Add(1)
-			go DoOpenAIRequest(search.title, search.prompt, ch, &wg, &percent, &mu)
-		}
-
-		wg.Wait()
-		close(ch)
-
-		for result := range ch {
-			content += result
-		}
-
-		bandNameQuery := strings.ReplaceAll(artistName, " ", "+")
-		songNameQuery := strings.ReplaceAll(trackName, " ", "+")
-		albumNameQuery := strings.ReplaceAll(albumName, " ", "+")
-
-		reg, err := regexp.Compile("[^a-zA-Z0-9]+")
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		bandNameQuery = reg.ReplaceAllString(bandNameQuery, "+")
-		albumNameQuery = reg.ReplaceAllString(albumNameQuery, "+")
-		songNameQuery = reg.ReplaceAllString(songNameQuery, "+")
-
-		youtubeURL := fmt.Sprintf("https://www.youtube.com/results?search_query=%s+%s", bandNameQuery, songNameQuery)
-		content += `
-## Links 
-` + youtubeURL
-
-		googleImagesURL := fmt.Sprintf("https://www.google.com/search?q=%s+%s&tbm=isch", bandNameQuery, albumNameQuery)
-		content += `
-` + googleImagesURL
-
-		wikipediaURL := fmt.Sprintf("https://www.google.com/search?q=wikipedia+%s+%s", bandNameQuery, albumNameQuery)
-		content += `
-` + wikipediaURL
-
-	}()
-
-	if _, err := tea.NewProgram(model).Run(); err != nil {
-		fmt.Println("Bummer, there's been an error:", err)
-		os.Exit(1)
-	}
-
-}
-
 func DoOpenAIRequest(title string, query string, result chan<- string, wg *sync.WaitGroup, percent *float64, mu *sync.Mutex) {
 	defer wg.Done()
 
-	client := openai.NewClient(os.Getenv("AUTH_TOKEN_OPEN_AI"))
-	resp, err := client.CreateChatCompletion(
+	resp, err := openaiClient.CreateChatCompletion(
 		context.Background(),
 		openai.ChatCompletionRequest{
 			Model: openai.GPT3Dot5Turbo,
@@ -249,7 +146,8 @@ func DoOpenAIRequest(title string, query string, result chan<- string, wg *sync.
 	)
 
 	if err != nil {
-		fmt.Printf("ChatCompletion error: %v\n", err)
+		fmt.Printf("Error chatgpt API: %v\n", err)
+		*percent += 1.0
 		return
 	}
 
@@ -261,5 +159,111 @@ func DoOpenAIRequest(title string, query string, result chan<- string, wg *sync.
 	mu.Unlock()
 
 	result <- content
+}
 
+func setContent(mu *sync.Mutex, percent *float64) {
+	metadata, err := spotifyclient.GetCurrentTrack()
+	if err != nil {
+		fmt.Println("Seems that you don't have the spotify app desktop installed  or is not open :(")
+		os.Exit(1)
+	}
+
+	fmt.Println(metadata)
+
+	artistName := metadata.ArtistName[0]
+	trackName := metadata.TrackName
+
+	albumName := strings.ReplaceAll(strings.ToLower(metadata.AlbumName), "deluxe", "")
+	albumName = strings.ReplaceAll(albumName, "expanded edition - remastered", "")
+	albumName = strings.ReplaceAll(strings.ToLower(albumName), strings.ToLower("Bonus Tracks Edition"), "")
+
+	type search struct {
+		prompt string
+		title  string
+	}
+
+	searches := []search{
+		{
+			prompt: fmt.Sprintf("Give me album information (limit 500 characters) of %s %s", artistName, albumName),
+			title:  "## Album Info",
+		},
+		{
+			prompt: fmt.Sprintf("Give me album tracklist of %s %s", artistName, albumName),
+			title:  "## Album Tracklist",
+		},
+		{
+			prompt: fmt.Sprintf("Give me album credits of %s %s", artistName, albumName),
+			title:  "## Album Credits",
+		},
+		{
+			prompt: fmt.Sprintf("Give me song info (limit 500 characters) of %s %s", artistName, trackName),
+			title:  "## Song Info",
+		},
+	}
+
+	ch := make(chan string, len(searches))
+	var wg sync.WaitGroup
+
+	for _, search := range searches {
+		wg.Add(1)
+		go DoOpenAIRequest(search.title, search.prompt, ch, &wg, percent, mu)
+	}
+
+	wg.Wait()
+	close(ch)
+
+	for result := range ch {
+		content += result
+	}
+
+	bandNameQuery := strings.ReplaceAll(artistName, " ", "+")
+	songNameQuery := strings.ReplaceAll(trackName, " ", "+")
+	albumNameQuery := strings.ReplaceAll(albumName, " ", "+")
+
+	reg, err := regexp.Compile("[^a-zA-Z0-9]+")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	bandNameQuery = reg.ReplaceAllString(bandNameQuery, "+")
+	albumNameQuery = reg.ReplaceAllString(albumNameQuery, "+")
+	songNameQuery = reg.ReplaceAllString(songNameQuery, "+")
+
+	youtubeURL := fmt.Sprintf("https://www.youtube.com/results?search_query=%s+%s", bandNameQuery, songNameQuery)
+	content += `
+## Links 
+` + youtubeURL
+
+	googleImagesURL := fmt.Sprintf("\nhttps://www.google.com/search?q=%s+%s&tbm=isch", bandNameQuery, albumNameQuery)
+	content += `
+` + googleImagesURL
+
+	wikipediaURL := fmt.Sprintf("\nhttps://www.google.com/search?q=wikipedia+%s+%s", bandNameQuery, albumNameQuery)
+	content += `
+` + wikipediaURL
+}
+
+func NewViewport(content string) (viewport.Model, error) {
+	const width = 120
+	vp := viewport.New(width, 40)
+	vp.Style = lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		PaddingRight(2)
+
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return viewport.Model{}, err
+	}
+
+	str, err := renderer.Render(content)
+	if err != nil {
+		return viewport.Model{}, err
+	}
+
+	vp.SetContent(str)
+	return vp, nil
 }
