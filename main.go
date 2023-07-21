@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -63,7 +64,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 
-		if percent > 1.0 {
+		if percent >= 1.0 {
 			percent = 1.0
 			m.loading = false
 
@@ -138,6 +139,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	var mu sync.Mutex
+
 	go func() {
 		metadata, err := spotifyclient.GetCurrentTrack()
 		if err != nil {
@@ -161,10 +164,6 @@ func main() {
 
 		searches := []search{
 			{
-				prompt: fmt.Sprintf("Give me an album review (limit 500 characters) of %s %s", artistName, albumName),
-				title:  "## Album Review",
-			},
-			{
 				prompt: fmt.Sprintf("Give me album information (limit 500 characters) of %s %s", artistName, albumName),
 				title:  "## Album Info",
 			},
@@ -187,7 +186,7 @@ func main() {
 
 		for _, search := range searches {
 			wg.Add(1)
-			go DoOpenAIRequest(search.title, search.prompt, ch, &wg, &percent)
+			go DoOpenAIRequest(search.title, search.prompt, ch, &wg, &percent, &mu)
 		}
 
 		wg.Wait()
@@ -196,6 +195,32 @@ func main() {
 		for result := range ch {
 			content += result
 		}
+
+		bandNameQuery := strings.ReplaceAll(artistName, " ", "+")
+		songNameQuery := strings.ReplaceAll(trackName, " ", "+")
+		albumNameQuery := strings.ReplaceAll(albumName, " ", "+")
+
+		reg, err := regexp.Compile("[^a-zA-Z0-9]+")
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		bandNameQuery = reg.ReplaceAllString(bandNameQuery, "+")
+		albumNameQuery = reg.ReplaceAllString(albumNameQuery, "+")
+		songNameQuery = reg.ReplaceAllString(songNameQuery, "+")
+
+		youtubeURL := fmt.Sprintf("https://www.youtube.com/results?search_query=%s+%s", bandNameQuery, songNameQuery)
+		content += `
+## Links 
+` + youtubeURL
+
+		googleImagesURL := fmt.Sprintf("https://www.google.com/search?q=%s+%s&tbm=isch", bandNameQuery, albumNameQuery)
+		content += `
+` + googleImagesURL
+
+		wikipediaURL := fmt.Sprintf("https://www.google.com/search?q=wikipedia+%s+%s", bandNameQuery, albumNameQuery)
+		content += `
+` + wikipediaURL
 
 	}()
 
@@ -206,7 +231,7 @@ func main() {
 
 }
 
-func DoOpenAIRequest(title string, query string, result chan<- string, wg *sync.WaitGroup, percent *float64) {
+func DoOpenAIRequest(title string, query string, result chan<- string, wg *sync.WaitGroup, percent *float64, mu *sync.Mutex) {
 	defer wg.Done()
 
 	client := openai.NewClient(os.Getenv("AUTH_TOKEN_OPEN_AI"))
@@ -231,7 +256,9 @@ func DoOpenAIRequest(title string, query string, result chan<- string, wg *sync.
 	content := title + "\n"
 	content += resp.Choices[0].Message.Content + "\n"
 
+	mu.Lock()
 	*percent += 0.25
+	mu.Unlock()
 
 	result <- content
 
