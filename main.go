@@ -61,6 +61,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if artistName == "" {
+		fmt.Println("Seems that you are listining to a podcast or something else...")
+		os.Exit(1)
+	}
+
 	openaiClient = openai.NewClient(os.Getenv("OPENAI_TOKEN"))
 
 	var mu sync.Mutex
