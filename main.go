@@ -20,19 +20,42 @@ import (
 )
 
 var helpStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render
+var styleTitle = lipgloss.NewStyle().Foreground(lipgloss.Color("#b8ffcb")).MarginTop(1).Bold(true).Render
+var styleWarning = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff7cc8")).Render
+
+const (
+	padding  = 2
+	maxWidth = 80
+)
 
 var openaiClient *openai.Client
 var percent float64
-var content string
 
 type model struct {
 	viewport viewport.Model
 	progress progress.Model
 	loading  bool
+	artist   string
+	album    string
+	track    string
+	errMsg   string
+	content  string
 }
 
 func main() {
-	model, err := newModel()
+	metadata, err := spotifyclient.GetCurrentTrack()
+	if err != nil {
+		fmt.Println("Seems that you don't have the spotify app desktop installed  or is not open :(")
+		os.Exit(1)
+	}
+
+	artistName := metadata.ArtistName[0]
+	trackName := metadata.TrackName
+	albumName := strings.ReplaceAll(strings.ToLower(metadata.AlbumName), "deluxe", "")
+	albumName = strings.ReplaceAll(albumName, "expanded edition - remastered", "")
+	albumName = strings.ReplaceAll(strings.ToLower(albumName), strings.ToLower("Bonus Tracks Edition"), "")
+
+	model, err := newModel(artistName, trackName, albumName)
 	if err != nil {
 		fmt.Println("Could not initialize Bubble Tea model:", err)
 		os.Exit(1)
@@ -41,7 +64,7 @@ func main() {
 	openaiClient = openai.NewClient(os.Getenv("OPENAI_TOKEN"))
 
 	var mu sync.Mutex
-	go setContent(&mu, &percent)
+	go model.getInfo(&mu, &percent)
 
 	if _, err := tea.NewProgram(model).Run(); err != nil {
 		fmt.Println("Bummer, there's been an error:", err)
@@ -49,12 +72,15 @@ func main() {
 	}
 }
 
-func newModel() (*model, error) {
+func newModel(artist, track, album string) (*model, error) {
 	prog := progress.New(progress.WithScaledGradient("#FF7CCB", "#FDFF8C"))
 
 	return &model{
 		progress: prog,
 		loading:  true,
+		artist:   artist,
+		track:    track,
+		album:    album,
 	}, nil
 }
 
@@ -62,11 +88,11 @@ func (m model) Init() tea.Cmd {
 	return tickCmd()
 }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "q", "ctrl+c", "esc":
+		case "ctrl+c":
 			return m, tea.Quit
 
 		default:
@@ -82,12 +108,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
+		tickMsg := time.Time(msg)
+		if tickMsg.Second()%2 == 0 {
+			percent += 0.01
+		}
 
 		if percent >= 1.0 {
 			percent = 1.0
 			m.loading = false
 
-			vp, err := NewViewport(content)
+			vp, err := NewViewport(m.content)
 			if err != nil {
 				panic(err)
 			}
@@ -101,20 +131,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
-const (
-	padding  = 2
-	maxWidth = 80
-)
-
-func (m model) View() string {
+func (m *model) View() string {
+	title := styleTitle(fmt.Sprintf("  %s - %s - %s", m.artist, m.album, m.track)) + "\n\n"
 	if m.loading {
 		pad := strings.Repeat(" ", padding)
-		return "\n" +
+		return "  " + title +
 			pad + m.progress.ViewAs(percent) + "\n\n" +
-			pad + helpStyle("Press any key to quit")
+			pad + helpStyle("Press ctrl-c to quit")
 	}
 
-	return m.viewport.View() + m.helpView()
+	errMsg := ""
+	if m.errMsg != "" {
+		errMsg = styleWarning(m.errMsg) + "\n\n"
+	}
+
+	return title + errMsg + m.viewport.View() + m.helpView()
 }
 
 func (e model) helpView() string {
@@ -129,7 +160,7 @@ func tickCmd() tea.Cmd {
 	})
 }
 
-func DoOpenAIRequest(title string, query string, result chan<- string, wg *sync.WaitGroup, percent *float64, mu *sync.Mutex) {
+func (m *model) DoOpenAIRequest(title string, query string, result chan<- string, wg *sync.WaitGroup, percent *float64, mu *sync.Mutex) {
 	defer wg.Done()
 
 	resp, err := openaiClient.CreateChatCompletion(
@@ -146,37 +177,22 @@ func DoOpenAIRequest(title string, query string, result chan<- string, wg *sync.
 	)
 
 	if err != nil {
-		fmt.Printf("Error chatgpt API: %v\n", err)
+		m.errMsg = "  openai api: " + err.Error()
 		*percent += 1.0
 		return
 	}
 
-	content := title + "\n"
-	content += resp.Choices[0].Message.Content + "\n"
+	c := title + "\n"
+	c += resp.Choices[0].Message.Content + "\n"
 
 	mu.Lock()
 	*percent += 0.25
 	mu.Unlock()
 
-	result <- content
+	result <- c
 }
 
-func setContent(mu *sync.Mutex, percent *float64) {
-	metadata, err := spotifyclient.GetCurrentTrack()
-	if err != nil {
-		fmt.Println("Seems that you don't have the spotify app desktop installed  or is not open :(")
-		os.Exit(1)
-	}
-
-	fmt.Println(metadata)
-
-	artistName := metadata.ArtistName[0]
-	trackName := metadata.TrackName
-
-	albumName := strings.ReplaceAll(strings.ToLower(metadata.AlbumName), "deluxe", "")
-	albumName = strings.ReplaceAll(albumName, "expanded edition - remastered", "")
-	albumName = strings.ReplaceAll(strings.ToLower(albumName), strings.ToLower("Bonus Tracks Edition"), "")
-
+func (m *model) getInfo(mu *sync.Mutex, percent *float64) {
 	type search struct {
 		prompt string
 		title  string
@@ -184,19 +200,19 @@ func setContent(mu *sync.Mutex, percent *float64) {
 
 	searches := []search{
 		{
-			prompt: fmt.Sprintf("Give me album information (limit 500 characters) of %s %s", artistName, albumName),
+			prompt: fmt.Sprintf("Give me album information (limit 500 characters) of %s %s", m.artist, m.album),
 			title:  "## Album Info",
 		},
 		{
-			prompt: fmt.Sprintf("Give me album tracklist of %s %s", artistName, albumName),
+			prompt: fmt.Sprintf("Give me album tracklist of %s %s", m.artist, m.album),
 			title:  "## Album Tracklist",
 		},
 		{
-			prompt: fmt.Sprintf("Give me album credits of %s %s", artistName, albumName),
+			prompt: fmt.Sprintf("Give me album credits of %s %s", m.artist, m.album),
 			title:  "## Album Credits",
 		},
 		{
-			prompt: fmt.Sprintf("Give me song info (limit 500 characters) of %s %s", artistName, trackName),
+			prompt: fmt.Sprintf("Give me song info (limit 500 characters) of %s %s", m.artist, m.track),
 			title:  "## Song Info",
 		},
 	}
@@ -206,19 +222,19 @@ func setContent(mu *sync.Mutex, percent *float64) {
 
 	for _, search := range searches {
 		wg.Add(1)
-		go DoOpenAIRequest(search.title, search.prompt, ch, &wg, percent, mu)
+		go m.DoOpenAIRequest(search.title, search.prompt, ch, &wg, percent, mu)
 	}
 
 	wg.Wait()
 	close(ch)
 
 	for result := range ch {
-		content += result
+		m.content += result
 	}
 
-	bandNameQuery := strings.ReplaceAll(artistName, " ", "+")
-	songNameQuery := strings.ReplaceAll(trackName, " ", "+")
-	albumNameQuery := strings.ReplaceAll(albumName, " ", "+")
+	bandNameQuery := strings.ReplaceAll(m.artist, " ", "+")
+	songNameQuery := strings.ReplaceAll(m.track, " ", "+")
+	albumNameQuery := strings.ReplaceAll(m.album, " ", "+")
 
 	reg, err := regexp.Compile("[^a-zA-Z0-9]+")
 	if err != nil {
@@ -230,16 +246,16 @@ func setContent(mu *sync.Mutex, percent *float64) {
 	songNameQuery = reg.ReplaceAllString(songNameQuery, "+")
 
 	youtubeURL := fmt.Sprintf("https://www.youtube.com/results?search_query=%s+%s", bandNameQuery, songNameQuery)
-	content += `
+	m.content += `
 ## Links 
 ` + youtubeURL
 
 	googleImagesURL := fmt.Sprintf("\nhttps://www.google.com/search?q=%s+%s&tbm=isch", bandNameQuery, albumNameQuery)
-	content += `
+	m.content += `
 ` + googleImagesURL
 
 	wikipediaURL := fmt.Sprintf("\nhttps://www.google.com/search?q=wikipedia+%s+%s", bandNameQuery, albumNameQuery)
-	content += `
+	m.content += `
 ` + wikipediaURL
 }
 
