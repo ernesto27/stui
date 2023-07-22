@@ -99,6 +99,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
+		case "ctrl+r":
+			m.loading = true
+			percent = 0.0
+			return m, tickCmd()
 
 		default:
 			var cmd tea.Cmd
@@ -113,6 +117,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
+		fmt.Println(time.Now())
 		tickMsg := time.Time(msg)
 		if tickMsg.Second()%2 == 0 {
 			percent += 0.01
@@ -137,7 +142,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) View() string {
-	title := styleTitle(fmt.Sprintf("  %s - %s - %s", m.artist, m.album, m.track)) + "\n\n"
+	title := styleTitle(fmt.Sprintf("  %c %s - %s - %s", '♪', m.artist, m.album, m.track)) + "\n\n"
 	if m.loading {
 		pad := strings.Repeat(" ", padding)
 		return "  " + title +
