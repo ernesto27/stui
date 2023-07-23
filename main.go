@@ -179,7 +179,7 @@ func (m *model) View() string {
 }
 
 func (e model) helpView() string {
-	return helpStyle("\n  ↑/↓: Navigate • ctrl-r Refresh • q: Quit \n")
+	return helpStyle("\n  ↑/↓: Navigate • ctrl-r Refresh • ctrl-c: Quit \n")
 }
 
 type tickMsg time.Time
@@ -249,7 +249,6 @@ func (m *model) getInfo() {
 		wg.Add(1)
 		go m.DoOpenAIRequest(search.title, search.prompt, &wg)
 	}
-
 	wg.Wait()
 
 	bandNameQuery := strings.ReplaceAll(m.artist, " ", "+")
