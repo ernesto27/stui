@@ -45,6 +45,7 @@ type model struct {
 	content string
 	percent float64
 	mu      *sync.Mutex
+	height  int
 }
 
 func main() {
@@ -133,6 +134,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 	case tea.WindowSizeMsg:
+		m.height = msg.Height
 		m.progress.Width = msg.Width - padding*2 - 4
 		if m.progress.Width > maxWidth {
 			m.progress.Width = maxWidth
@@ -147,7 +149,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.percent >= 1.0 {
 			m.loading = false
 
-			vp, err := NewViewport(m.content)
+			vp, err := NewViewport(*m)
 			if err != nil {
 				panic(err)
 			}
@@ -276,9 +278,15 @@ func (m *model) getInfo() {
 
 }
 
-func NewViewport(content string) (viewport.Model, error) {
+func NewViewport(m model) (viewport.Model, error) {
 	const width = 120
-	vp := viewport.New(width, 40)
+
+	height := m.height - 5
+	if m.errMsg != "" {
+		height = 15
+	}
+
+	vp := viewport.New(width, height)
 	vp.Style = lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("62")).
@@ -292,7 +300,7 @@ func NewViewport(content string) (viewport.Model, error) {
 		return viewport.Model{}, err
 	}
 
-	str, err := renderer.Render(content)
+	str, err := renderer.Render(m.content)
 	if err != nil {
 		return viewport.Model{}, err
 	}
