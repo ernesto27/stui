@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -49,7 +50,21 @@ type model struct {
 }
 
 func main() {
-	musicInfo := getSpotifyTrackInfo()
+	var artistParam string
+	flag.StringVar(&artistParam, "artist", "", "Artist name")
+	var albumParam string
+	flag.StringVar(&albumParam, "album", "", "Album name")
+
+	flag.Parse()
+
+	musicInfo := MusicInfo{}
+
+	if artistParam != "" && albumParam != "" {
+		musicInfo.artist = artistParam
+		musicInfo.album = albumParam
+	} else {
+		musicInfo = getSpotifyTrackInfo()
+	}
 
 	model, err := newModel(musicInfo.artist, musicInfo.track, musicInfo.album)
 	if err != nil {
@@ -192,7 +207,7 @@ func tickCmd() tea.Cmd {
 	})
 }
 
-func (m *model) DoOpenAIRequest(title string, query string, wg *sync.WaitGroup) {
+func (m *model) DoOpenAIRequest(title string, query string, wg *sync.WaitGroup, lenSearches int) {
 	defer wg.Done()
 
 	resp, err := openaiClient.CreateChatCompletion(
@@ -219,7 +234,7 @@ func (m *model) DoOpenAIRequest(title string, query string, wg *sync.WaitGroup) 
 	c += resp.Choices[0].Message.Content + "\n"
 
 	m.mu.Lock()
-	m.percent += 0.33
+	m.percent += float64(100/lenSearches) / 100
 	m.content += c
 	m.mu.Unlock()
 }
@@ -239,17 +254,25 @@ func (m *model) getInfo() {
 			prompt: fmt.Sprintf("Give me album review of %s %s", m.artist, m.album),
 			title:  "## Album review",
 		},
-		{
-			prompt: fmt.Sprintf("Give me song info (limit 500 characters) of %s %s", m.artist, m.track),
+	}
+
+	if m.track != "" {
+		searches = append(searches, search{
+			prompt: fmt.Sprintf("Give me song info of %s %s", m.artist, m.track),
 			title:  "## Song info",
-		},
+		})
+
+		searches = append(searches, search{
+			prompt: fmt.Sprintf("Give lyrics of, i do not want other data %s %s", m.artist, m.track),
+			title:  "## Song lyrics",
+		})
 	}
 
 	var wg sync.WaitGroup
 
 	for _, search := range searches {
 		wg.Add(1)
-		go m.DoOpenAIRequest(search.title, search.prompt, &wg)
+		go m.DoOpenAIRequest(search.title, search.prompt, &wg, len(searches))
 	}
 	wg.Wait()
 
