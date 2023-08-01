@@ -42,3 +42,9 @@ changelog:
 # Feel free to remove those if you don't want/use them.
 # yaml-language-server: $schema=https://goreleaser.com/static/schema.json
 # vim: set ts=2 sw=2 tw=0 fo=cnqoj
+brews:
+- name: stui
+  homepage: https://github.com/ernesto27/stui
+  tap:
+    owner: ernesto27
+    name: stui
