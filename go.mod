@@ -1,4 +1,4 @@
-module openai
+module github.com/ernesto27/stui
 
 go 1.20
 
