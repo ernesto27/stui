@@ -263,8 +263,8 @@ func (m *model) getInfo() {
 		})
 
 		searches = append(searches, search{
-			prompt: fmt.Sprintf("Give lyrics of, i do not want other data %s %s", m.artist, m.track),
-			title:  "## Song lyrics",
+			prompt: fmt.Sprintf("Give me a biography of %s", m.artist),
+			title:  "## Artist bio",
 		})
 	}
 
